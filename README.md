@@ -33,10 +33,10 @@ The server listens on port `80`.
 
 ## Run
 
-The image is published to the public AWS ECR registry:
+The image is published as `ps-report-api` to the registry configured in CI:
 
 ```bash
-docker run --rm -p 8080:80 -e APP_ENV=prod -e POSTGRES_HOST=... public.ecr.aws/b2s9z7l1/ps-report-api:latest
+docker run --rm -p 8080:80 -e APP_ENV=prod -e POSTGRES_HOST=... <registry>/ps-report-api:latest
 ```
 
 Or build locally:
@@ -56,6 +56,7 @@ curl -X POST http://localhost:8080/log -H 'Content-Type: application/json' \
 ## CI
 
 Every push and pull request builds the Docker image. Pushes to `main` publish
-`public.ecr.aws/b2s9z7l1/ps-report-api:latest` (plus the commit SHA); `v*` tags publish
-the corresponding semver tag. Publishing uses the `AWS_ACCESS_KEY_ID` /
+`<ECR_REGISTRY>/ps-report-api:latest` (plus the commit SHA); any git tag publishes the
+corresponding image tag (semver tags also publish the stripped version). Publishing
+uses the `ECR_REGISTRY` repository variable and the `AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY` repository secrets; pull requests only build, without pushing.
