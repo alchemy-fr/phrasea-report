@@ -27,7 +27,14 @@ impl Config {
             .application_name("phrasea-report")
             // Keeps the NOTICE of the idempotent schema creation out of the logs.
             .options("-c client_min_messages=warning")
-            .connect_timeout(Duration::from_secs(5));
+            .connect_timeout(Duration::from_secs(5))
+            // A peer gone without closing the connection (failover, network
+            // partition) is detected within a minute instead of the 2-hour
+            // keepalive default, during which the worker would wait on the insert.
+            .tcp_user_timeout(Duration::from_secs(30))
+            .keepalives_idle(Duration::from_secs(30))
+            .keepalives_interval(Duration::from_secs(10))
+            .keepalives_retries(3);
 
         Ok(Self {
             app_env: get("APP_ENV").unwrap_or_default(),
@@ -89,6 +96,21 @@ mod tests {
         assert_eq!(config.listen_port, 80);
         assert_eq!(config.failed_logs_file, PathBuf::from("failed_logs.jsonl"));
         assert_eq!(config.postgres.get_ports(), [5432]);
+    }
+
+    #[test]
+    fn detects_a_dead_connection_within_a_minute() {
+        let config = config(&[]).unwrap();
+
+        assert_eq!(
+            config.postgres.get_tcp_user_timeout(),
+            Some(&Duration::from_secs(30))
+        );
+        assert!(config.postgres.get_keepalives());
+        assert_eq!(
+            config.postgres.get_keepalives_idle(),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
