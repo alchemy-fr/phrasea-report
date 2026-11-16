@@ -1,7 +1,7 @@
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use tokio::sync::mpsc::{Sender, error::TrySendError};
@@ -23,17 +23,14 @@ pub fn router(queue: Sender<LogEntry>) -> Router {
 async fn push_log(State(queue): State<Sender<LogEntry>>, body: Bytes) -> Response {
     // The first JSON value of the body, whatever follows it and whatever the
     // Content-Type header says.
-    let entry = match serde_json::Deserializer::from_slice(&body)
+    let decoded = serde_json::Deserializer::from_slice(&body)
         .into_iter::<LogEntry>()
         .next()
-    {
-        Some(Ok(entry)) => entry,
-        Some(Err(err)) => {
+        .unwrap_or_else(|| Err(serde::de::Error::custom("empty body")));
+    let entry = match decoded {
+        Ok(entry) => entry,
+        Err(err) => {
             warn!("Unable to decode JSON: {err}");
-            return text_error(StatusCode::BAD_REQUEST, "Invalid JSON");
-        }
-        None => {
-            warn!("Unable to decode JSON: empty body");
             return text_error(StatusCode::BAD_REQUEST, "Invalid JSON");
         }
     };
@@ -48,17 +45,15 @@ async fn push_log(State(queue): State<Sender<LogEntry>>, body: Bytes) -> Respons
 }
 
 fn text_error(status: StatusCode, message: &str) -> Response {
-    let mut response = (status, format!("{message}\n")).into_response();
-    let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/plain; charset=utf-8"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    response
+    (
+        status,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        format!("{message}\n"),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
