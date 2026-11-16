@@ -62,7 +62,12 @@ impl FailedLogs {
             serde_json::to_writer(&mut data, entry)?;
             data.push(b'\n');
         }
-        fs::write(&self.path, data)
+        // Written aside then renamed over the file: an interruption leaves
+        // either the old entries or the new ones, never a truncated file.
+        let mut temporary = self.path.clone().into_os_string();
+        temporary.push(".tmp");
+        fs::write(&temporary, data)?;
+        fs::rename(&temporary, &self.path)
     }
 }
 
@@ -140,6 +145,7 @@ mod tests {
 
         failed.replace(&[entry("b")]).unwrap();
         assert_eq!(failed.read().unwrap(), [entry("b")]);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
 
         failed.replace(&[]).unwrap();
         assert!(!path.exists());
