@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::net::TcpListener;
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
@@ -40,8 +41,15 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<()> {
     let config = Config::from_env()?;
+    let mut shutdown = Box::pin(shutdown_signal()?);
 
-    let store = PgStore::connect(config.postgres).await?;
+    let store = tokio::select! {
+        store = PgStore::connect(config.postgres) => store?,
+        () = &mut shutdown => {
+            info!("Shutting down before the database was reached");
+            return Ok(());
+        }
+    };
     let (queue, mut receiver) = mpsc::channel(QUEUE_SIZE);
     let mut worker = tokio::spawn(async move {
         Worker::new(store, FailedLogs::new(config.failed_logs_file))
@@ -62,7 +70,7 @@ async fn run() -> Result<()> {
     // The server holds the only sender: once it has stopped, the worker drains
     // the queue and returns.
     let server = axum::serve(listener, http::router(queue))
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown)
         .into_future();
 
     tokio::select! {
@@ -77,23 +85,15 @@ async fn run() -> Result<()> {
     worker.await?
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(err) => {
-                error!("Unable to listen for SIGTERM: {err}");
-                std::future::pending::<()>().await;
-            }
+/// Registers the handlers right away: as the container's PID 1, the process
+/// ignores SIGTERM and SIGINT as long as it has none.
+fn shutdown_signal() -> Result<impl Future<Output = ()> + Send + 'static> {
+    let mut interrupt = signal(SignalKind::interrupt()).context("Unable to listen for SIGINT")?;
+    let mut terminate = signal(SignalKind::terminate()).context("Unable to listen for SIGTERM")?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
         }
-    };
-    tokio::select! {
-        () = ctrl_c => {}
-        () = terminate => {}
-    }
+    })
 }
