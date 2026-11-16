@@ -29,17 +29,19 @@ impl FailedLogs {
 
     /// The stored entries; corrupt lines are logged and dropped.
     pub fn read(&self) -> io::Result<Vec<LogEntry>> {
-        let data = match fs::read_to_string(&self.path) {
+        // Bytes, not a string: invalid UTF-8 (a line cut by a crash) only
+        // spoils its own line.
+        let data = match fs::read(&self.path) {
             Ok(data) => data,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(err) => return Err(err),
         };
 
         Ok(data
-            .lines()
-            .filter(|line| !line.trim().is_empty())
+            .split(|&byte| byte == b'\n')
+            .filter(|line| !line.trim_ascii().is_empty())
             .filter_map(|line| {
-                serde_json::from_str(line)
+                serde_json::from_slice(line)
                     .inspect_err(|err| warn!("Corrupt failed log entry: {err}"))
                     .ok()
             })
@@ -103,6 +105,22 @@ mod tests {
         fs::write(
             &path,
             "{\"action\":\"a\"}\nnot json\n\n{\"action\":\"b\"}\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            FailedLogs::new(path).read().unwrap(),
+            [entry("a"), entry("b")]
+        );
+    }
+
+    #[test]
+    fn skips_a_line_with_invalid_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("failed.jsonl");
+        fs::write(
+            &path,
+            b"{\"action\":\"a\"}\n{\"action\":\"\xc3\n{\"action\":\"b\"}\n",
         )
         .unwrap();
 
